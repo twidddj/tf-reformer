@@ -197,7 +197,6 @@ def lsh_attention(qk, v, num_hashes=2, bucket_size=4, input_mask=None,
 
 
 def multihead_lsh_attention(queries, keys, values,
-                            is_full=False,
                             max_seq_len=None,
                             seq_len=None,
                             num_hashses=2,
@@ -224,35 +223,10 @@ def multihead_lsh_attention(queries, keys, values,
             input_mask = tf.sequence_mask(seq_len, max_seq_len)
 
         outputs = []
-        if is_full:
-            for qk, v in zip(Q_, V_):
-                k = make_unit_length(qk)
-
-                # dot product
-                dots = tf.matmul(qk, tf.transpose(k, [0, 2, 1]))  # (N, T_q, T_k)
-
-                if input_mask is not None:
-                    _mask = tf.expand_dims(1 - tf.cast(input_mask, tf.float32), -1)
-                    dots += _mask * float('-inf')
-
-                # causality or future blinding masking
-                if causality:
-                    dots = mask(dots, type="future")
-
-                # softmax
-                dots_logsumexp = tf.math.reduce_logsumexp(dots, axis=-1, keepdims=True)
-                dots = tf.exp(dots - dots_logsumexp)
-                dots = tf.layers.dropout(dots, rate=dropout_rate, training=training)
-
-                # weighted sum (context vectors)
-                output = tf.matmul(dots, v)  # (N, T_q, d_v)
-
-                outputs.append(output)
-        else:
-            for qk, v in zip(Q_, V_):
-                outputs.append(lsh_attention(qk, v,
-                                             num_hashes=num_hashses, bucket_size=bucket_size, input_mask=input_mask,
-                                             dropout_rate=dropout_rate, training=training, causality=causality))
+        for qk, v in zip(Q_, V_):
+            outputs.append(lsh_attention(qk, v,
+                                         num_hashes=num_hashses, bucket_size=bucket_size, input_mask=input_mask,
+                                         dropout_rate=dropout_rate, training=training, causality=causality))
 
         outputs = tf.concat(outputs, -1)
 
