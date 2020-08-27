@@ -32,7 +32,7 @@ class TFModel:
 
 class Reformer(TFModel):
     def __init__(self, d_model, d_ff, num_heads, vocab_size, num_blocks, max_len, dropout_rate=0.0, is_training=True,
-                 num_hashes=None, bucket_size=None, causality=False):
+                 num_hashes=None, bucket_size=None, causality=False, is_full=False):
         assert num_hashes is not None
         assert bucket_size is not None
 
@@ -47,6 +47,7 @@ class Reformer(TFModel):
         self.num_hashes = num_hashes
         self.bucket_size = bucket_size
         self.causality = causality
+        self.is_full = is_full
 
         self.embeddings = tf.compat.v1.get_variable('weight_mat',
                                           dtype=tf.float32,
@@ -62,6 +63,7 @@ class Reformer(TFModel):
         enc = tf.layers.dropout(enc, self.dropout_rate, training=self.is_training)
 
         f = lambda x: multihead_lsh_attention(x, x, x,
+                                              is_full=self.is_full,
                                               max_seq_len=self.max_len,
                                               seq_len=seq_len,
                                               num_hashses=self.num_hashes,
@@ -89,7 +91,8 @@ class Reformer(TFModel):
         raise NotImplementedError
 
     def train(self, xs, labels, lr, manual_grad=True):
-        emb, y1, y2 = self.encode(xs)
+        T = tf.constant(self.max_len, tf.int64)
+        emb, y1, y2 = self.encode(xs, T)
         memory = tf.reduce_mean(tf.stack([y1, y2], 0), 0)
 
         # loss

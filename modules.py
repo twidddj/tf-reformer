@@ -10,10 +10,11 @@ import tensorflow as tf
 from transformer_modules import mask, ln
 
 
-def sort_key_val(t1, t2, dim=-1):
+def sort_key_val(t1, t2, N, dim=-1):
     ids = tf.argsort(t1, axis=dim)
     values = tf.gather(t1, ids, batch_dims=1)
-    t2 = tf.broadcast_to(t2, t1.shape)
+    # t2 = tf.broadcast_to(t2, t1.shape)
+    t2 = tf.tile(t2, [N, 1])
     return values, tf.gather(t2, ids, batch_dims=1)
 
 
@@ -33,10 +34,10 @@ def mask_out(x, mask, mask_val=float('-inf')):
     return x
 
 
-def hash_vec(x, num_hashes, bucket_size, dropout_rate=0, training=True):
+def hash_vec(x, x_len, num_hashes, bucket_size, dropout_rate=0, training=True):
     N, T, dim = x.shape
 
-    n_buckets = T // bucket_size
+    n_buckets = x_len // bucket_size
     rot_size = n_buckets
 
     # Hashing
@@ -52,7 +53,7 @@ def hash_vec(x, num_hashes, bucket_size, dropout_rate=0, training=True):
     add offset so that each hash can be distinguished in multiround LSH
     # multiround LSH를 수행할 때, 각 hash bucket을 구별하여 정렬할 수 있도록 offset을 더해줌
     """
-    offsets = tf.range(num_hashes)
+    offsets = tf.range(num_hashes, dtype=tf.int64)
     offsets = tf.reshape(offsets * n_buckets, (1, -1, 1))
     offsets = tf.cast(offsets, tf.int64)
     buckets = tf.reshape(tmp + offsets, [N, -1])  # N x (num_hashes*T)
@@ -60,20 +61,17 @@ def hash_vec(x, num_hashes, bucket_size, dropout_rate=0, training=True):
     return buckets
 
 
-def lsh_attention(qk, v, num_hashes=2, bucket_size=4, input_mask=None,
+def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_mask=None,
                   dropout_rate=0, training=True, causality=False):
-    N, T, dim = qk.shape
-    is_full = False
+    N, _, dim = qk.shape
 
-    if T == bucket_size:
+    if is_full:
         # full attn
-        is_full = True
         buckets = tf.zeros((N, T), tf.int64)
         n_buckets = 1
         num_hashes = 1
     else:
-        assert T % (bucket_size * 2) == 0
-        buckets = hash_vec(qk, num_hashes, bucket_size, dropout_rate=dropout_rate, training=training)
+        buckets = hash_vec(qk, T, num_hashes, bucket_size, dropout_rate=dropout_rate, training=training)
         n_buckets = T // bucket_size
 
     """
@@ -86,13 +84,13 @@ def lsh_attention(qk, v, num_hashes=2, bucket_size=4, input_mask=None,
     ticker = tf.expand_dims(tf.range(num_hashes * T), axis=0)
     buckets_and_t = T * buckets + tf.cast((ticker % T), tf.int64)
     buckets_and_t = tf.stop_gradient(buckets_and_t)
-    sbuckets_and_t, sticker = sort_key_val(buckets_and_t, ticker, dim=-1)
+    sbuckets_and_t, sticker = sort_key_val(buckets_and_t, ticker, N, dim=-1)
 
     """
     It needs to undo sort after attention operation for each hash bucket.
     # 해시버킷 별 attention 후 원래 순서로 복원
     """
-    _, undo_sort = sort_key_val(sticker, ticker, dim=-1)
+    _, undo_sort = sort_key_val(sticker, ticker, N, dim=-1)
 
     sticker = tf.stop_gradient(sticker)
     undo_sort = tf.stop_gradient(undo_sort)
@@ -112,8 +110,8 @@ def lsh_attention(qk, v, num_hashes=2, bucket_size=4, input_mask=None,
     """
     chunk_size = num_hashes * n_buckets
     bq_t = bkv_t = tf.reshape(st, (N, chunk_size, -1))
-    bqk = tf.reshape(sqk, (N, chunk_size, -1, sqk.shape[-1]))
-    bv = tf.reshape(sv, (N, chunk_size, -1, sv.shape[-1]))
+    bqk = tf.reshape(sqk, (N, chunk_size, -1, dim))
+    bv = tf.reshape(sv, (N, chunk_size, -1, dim))
 
     # Hashing operates on unit-length vectors. Unnormalized query vectors are
     # fine because they effectively provide a learnable temperature for the
@@ -196,9 +194,9 @@ def lsh_attention(qk, v, num_hashes=2, bucket_size=4, input_mask=None,
     return out
 
 
-def multihead_lsh_attention(queries, keys, values,
+def multihead_lsh_attention(queries, keys, values, seq_len=None,
+                            is_full=False,
                             max_seq_len=None,
-                            seq_len=None,
                             num_hashses=2,
                             bucket_size=4,
                             num_heads=8,
@@ -218,15 +216,20 @@ def multihead_lsh_attention(queries, keys, values,
         Q_ = tf.split(Q, num_heads, axis=2)
         V_ = tf.split(V, num_heads, axis=2)
 
-        input_mask = None
+        input_masks = None
         if seq_len is not None:
             input_mask = tf.sequence_mask(seq_len, max_seq_len)
+            input_mask = tf.expand_dims(input_mask, 0)
+            input_masks = tf.tile(input_mask, [N, 1])
+
+            tT = bucket_size * 2
+            seq_len += (tT - (seq_len % tT)) % tT
 
         outputs = []
         for qk, v in zip(Q_, V_):
-            outputs.append(lsh_attention(qk, v,
-                                         num_hashes=num_hashses, bucket_size=bucket_size, input_mask=input_mask,
-                                         dropout_rate=dropout_rate, training=training, causality=causality))
+            outputs.append(lsh_attention(qk, v, seq_len,
+                                         num_hashes=num_hashses, bucket_size=bucket_size, input_mask=input_masks,
+                                         dropout_rate=dropout_rate, training=training, causality=causality, is_full=is_full))
 
         outputs = tf.concat(outputs, -1)
 

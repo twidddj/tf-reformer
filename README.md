@@ -21,38 +21,40 @@ This repository provides an implementation of [Reformer : Efficient Transformer]
 python -m dupltask.test --batch_size 200 --num_batch 10 --model_dir [model_path] --test_num_hashes 4 --test_bucket_size 4
 ```
 
-* When bucket_size == seq_len, It's on full_attention mode. 
-
 #### 3. short-cuts for evaluation
 ##### 1. test using different number of hashes on the same model ( `--test_num_hashes` )
 ```
 python -m dupltask.test --test_num_hashes 1 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_nr2_bs4_manual
 ```
-> `accuracy: 0.8214, elapsed: 23.25s`
+> `accuracy: 0.8131, elapsed: 16.26s`
 ```
 python -m dupltask.test --test_num_hashes 2 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_nr2_bs4_manual
 ```
-> `accuracy: 0.9683, elapsed: 30.19s`
+> `accuracy: 0.9563, elapsed: 21.81s`
 ```
 python -m dupltask.test --test_num_hashes 4 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_nr2_bs4_manual
 ```
-> `accuracy: 0.9960, elapsed: 47.57s`
+> `accuracy: 0.9951, elapsed: 34.91s`
 ```
 python -m dupltask.test --test_num_hashes 8 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_nr2_bs4_manual
 ```
-> `accuracy: 0.9998, elapsed: 78.07s`
+> `accuracy: 0.9999, elapsed: 66.41s`
+```
+python -m dupltask.test --test_num_hashes 2 --test_bucket_size 4 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_full
+```
+> `accuracy: 0.7413, elapsed: 22.43s`
 
 ##### 2. test seq_len: 1024
 ```
 python -m dupltask.test --test_num_hashes 2 -b 1 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64
 ```
-> `accuracy: 0.9816, elapsed: 104.36s`
+> `accuracy: 0.9710, elapsed: 85.33s`
 
 * Full-attention mode
 ```
-python -m dupltask.test --test_bucket_size 1024 -b 1 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64
+python -m dupltask.test --is_full 1 -b 1 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64
 ```
-> `accuracy: 1.0000, elapsed: 145.70s`
+> `accuracy: 1.0000, elapsed: 106.72s`
 
 ## Issues
 * You can currently only use GradientDescentOptimizer to apply the manual gradient.
