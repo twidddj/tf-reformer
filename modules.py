@@ -36,7 +36,8 @@ def mask_out(x, mask, mask_val=float('-inf')):
 def hash_vec(x, num_hashes, bucket_size, dropout_rate=0, training=True):
     N, T, dim = x.shape
 
-    n_buckets = T // bucket_size
+    # n_buckets = T // bucket_size
+    n_buckets = tf.cast(T/bucket_size, tf.int32)
     rot_size = n_buckets
 
     # Hashing
@@ -72,7 +73,6 @@ def lsh_attention(qk, v, num_hashes=2, bucket_size=4, input_mask=None,
         n_buckets = 1
         num_hashes = 1
     else:
-        assert T % (bucket_size * 2) == 0
         buckets = hash_vec(qk, num_hashes, bucket_size, dropout_rate=dropout_rate, training=training)
         n_buckets = T // bucket_size
 

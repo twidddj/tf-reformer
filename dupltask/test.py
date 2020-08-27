@@ -9,7 +9,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('-b', '--batch_size', default=1, type=int)
     ap.add_argument('-n', '--num_batch', default=10, type=int)
-    ap.add_argument('-dir', '--model_dir', default='log_dir/lsh_seq1024_nr2_bs64', type=str)
+    ap.add_argument('-dir', '--model_dir', default='log_dir/lsh_seq32_nr2_bs4_manual', type=str)
     ap.add_argument('-tnr', '--test_num_hashes', default=2, type=int)
     ap.add_argument('-tbs', '--test_bucket_size', default=None, type=int)
     args = ap.parse_args()

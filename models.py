@@ -62,7 +62,6 @@ class Reformer(TFModel):
         enc = tf.layers.dropout(enc, self.dropout_rate, training=self.is_training)
 
         f = lambda x: multihead_lsh_attention(x, x, x,
-                                              is_full=False,
                                               max_seq_len=self.max_len,
                                               seq_len=seq_len,
                                               num_hashses=self.num_hashes,

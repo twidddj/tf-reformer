@@ -26,7 +26,7 @@ class DuplTaskReformer(Reformer):
         return loss
 
     def build_for_ar_gen(self, N):
-        self.xs = tf.placeholder(tf.int32, shape=[N, self.max_len], name='ar_input')
+        self.xs = tf.placeholder(tf.int32, shape=[N, None], name='ar_input')
         self.lengths = tf.placeholder(tf.int32, shape=[N, ], name='ar_input_lengths')
 
         _, y1, y2 = self.encode(self.xs, seq_len=self.lengths)
