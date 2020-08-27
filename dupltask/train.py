@@ -6,6 +6,7 @@ from models import Reformer
 
 
 log_dir_tmpl = 'log_dir/lsh_seq{}_nr{}_bs{}'
+log_dir_full_attn_tmpl = 'log_dir/lsh_seq{}_full'
 
 
 class DuplTaskReformer(Reformer):
@@ -82,7 +83,8 @@ if __name__ == '__main__':
     ap.add_argument('-bs', '--bucket_size', default=4, type=int)
     ap.add_argument('-l', '--seq_len', default=32, type=int)
     ap.add_argument('-vs', '--vocab_size', default=64, type=int)
-    ap.add_argument('-lr', '--learning_rate', default=1e-4, type=float)
+    ap.add_argument('-lr', '--learning_rate', default=1e-3, type=float)
+    ap.add_argument('-f', '--is_full', default=True, type=bool)
 
     args = ap.parse_args()
 
@@ -96,15 +98,21 @@ if __name__ == '__main__':
     bucket_size = args.bucket_size
     seq_len = args.seq_len
     learning_rate = args.learning_rate
+    is_full = args.is_full
 
     seg_len = seq_len // 2 - 1
 
     manual_grad = args.mode is not 'auto'
 
     import os
+
     if manual_grad:
         log_dir_tmpl += "_manual"
-    log_dir = log_dir_tmpl.format(seq_len, num_hashes, bucket_size)
+
+    if is_full:
+        log_dir = log_dir_full_attn_tmpl.format(seq_len)
+    else:
+        log_dir = log_dir_tmpl.format(seq_len, num_hashes, bucket_size)
 
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
@@ -119,7 +127,7 @@ if __name__ == '__main__':
     lr = tf.placeholder(tf.float32)
 
     model = DuplTaskReformer(d_model, d_ff, num_heads, vocab_size, num_blocks, seq_len,
-                             num_hashes=num_hashes, bucket_size=bucket_size)
+                             num_hashes=num_hashes, bucket_size=bucket_size, is_full=is_full)
     loss, train_op, gvs = model.train(xs, ys, lr, manual_grad=manual_grad)
     model.build_for_ar_gen(1)
 
