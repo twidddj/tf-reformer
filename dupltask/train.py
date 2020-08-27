@@ -10,10 +10,10 @@ log_dir_tmpl = 'log_dir/lsh_seq{}_nr{}_bs{}'
 
 class DuplTaskReformer(Reformer):
     def __init__(self, d_model, d_ff, num_heads, vocab_size, num_blocks, max_len, dropout_rate=0.0,
-                 is_training=True, num_hashes=None, bucket_size=None):
+                 is_training=True, num_hashes=None, bucket_size=None, is_full=False):
 
         super().__init__(d_model, d_ff, num_heads, vocab_size, num_blocks, max_len, dropout_rate=dropout_rate,
-                 is_training=is_training, num_hashes=num_hashes, bucket_size=bucket_size, causality=True)
+                 is_training=is_training, num_hashes=num_hashes, bucket_size=bucket_size, causality=True, is_full=is_full)
 
     def create_loss(self, xs, labels, memory):
         logits = self.to_out(memory)
@@ -27,9 +27,14 @@ class DuplTaskReformer(Reformer):
 
     def build_for_ar_gen(self, N):
         self.xs = tf.placeholder(tf.int32, shape=[N, None], name='ar_input')
-        self.lengths = tf.placeholder(tf.int32, shape=[N, ], name='ar_input_lengths')
+        self.T = tf.placeholder(tf.int64, name='ar_input_length')
 
-        _, y1, y2 = self.encode(self.xs, seq_len=self.lengths)
+        tT = self.bucket_size * 2
+        pad_num = (tT - (self.T % tT)) % tT
+
+        xs = tf.pad(self.xs, [[0, 0], [0, pad_num]])
+
+        _, y1, y2 = self.encode(xs, seq_len=self.T)
         memory = tf.reduce_mean(tf.stack([y1, y2], 0), 0)
         logits = self.to_out(memory)
 
@@ -46,16 +51,16 @@ class DuplTaskReformer(Reformer):
         assert samples is not None
 
         result = samples.copy()
-        result[:, seg_len + 1:] = 0  # mask out right half (to be predicted)
-        sample_lens = np.ones(self.N, dtype=np.int32) * (seg_len + 2)
+        result = result[:, :seg_len + 2] #  0w0
+        sample_len = result.shape[-1]
 
-        _logits = sess.run(self.gen, feed_dict={self.xs: result, self.lengths: sample_lens})
-        _preds = np.argmax(_logits[:, sample_lens - 1], -1)
+        _logits = sess.run(self.gen, feed_dict={self.xs: result, self.T: sample_len})
+        _preds = np.argmax(_logits[:, sample_len-1], -1)
         for t in range(seg_len):
-            sample_lens += 1
-            result[:, sample_lens - 1] = _preds
-            _logits = sess.run(self.gen, feed_dict={self.xs: result, self.lengths: sample_lens})
-            _preds = np.argmax(_logits[:, sample_lens - 1], -1)
+            sample_len += 1
+            result = np.concatenate([result, _preds.reshape(-1, 1)], -1)
+            _logits = sess.run(self.gen, feed_dict={self.xs: result, self.T: sample_len})
+            _preds = np.argmax(_logits[:, sample_len-1], -1)
         return result
 
 
@@ -68,16 +73,16 @@ def get_sample(vocab_size, seg_len):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('-b', '--batch_size', default=8, type=int)
-    ap.add_argument('-t', '--mode', default='auto', choices=['auto', 'manual'])
-    ap.add_argument('-dm', '--d_model', default=128, type=int)
-    ap.add_argument('-dff', '--d_ff', default=256, type=int)
+    ap.add_argument('-t', '--mode', default='manual', choices=['auto', 'manual'])
+    ap.add_argument('-dm', '--d_model', default=64, type=int)
+    ap.add_argument('-dff', '--d_ff', default=128, type=int)
     ap.add_argument('-nb', '--num_blocks', default=1, type=int)
     ap.add_argument('-nh', '--num_heads', default=4, type=int)
     ap.add_argument('-nr', '--num_hashes', default=2, type=int)
-    ap.add_argument('-bs', '--bucket_size', default=64, type=int)
-    ap.add_argument('-l', '--seq_len', default=1024, type=int)
+    ap.add_argument('-bs', '--bucket_size', default=4, type=int)
+    ap.add_argument('-l', '--seq_len', default=32, type=int)
     ap.add_argument('-vs', '--vocab_size', default=64, type=int)
-    ap.add_argument('-lr', '--learning_rate', default=1e-3, type=float)
+    ap.add_argument('-lr', '--learning_rate', default=1e-4, type=float)
 
     args = ap.parse_args()
 
