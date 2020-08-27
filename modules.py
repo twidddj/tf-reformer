@@ -222,7 +222,8 @@ def multihead_lsh_attention(queries, keys, values, seq_len=None,
             input_mask = tf.expand_dims(input_mask, 0)
             input_masks = tf.tile(input_mask, [N, 1])
 
-            tT = bucket_size * 2
+            # assert seq_len % bucket_size == 0
+            tT = bucket_size
             seq_len += (tT - (seq_len % tT)) % tT
 
         outputs = []

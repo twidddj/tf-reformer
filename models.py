@@ -54,7 +54,12 @@ class Reformer(TFModel):
                                           shape=(vocab_size, d_model),
                                           initializer=tf.contrib.layers.xavier_initializer())
 
-    def encode(self, xs, seq_len=None):
+    def encode(self, xs, seq_len):
+        # assert T % bucket_size == 0
+        tT = self.bucket_size
+        pad_num = (tT - (seq_len % tT)) % tT
+        xs = tf.pad(xs, [[0, 0], [0, pad_num]])
+
         # embedding
         enc = tf.nn.embedding_lookup(self.embeddings, xs)  # (N, T1, dim)
         enc *= self.d_model ** 0.5  # scale

@@ -30,12 +30,7 @@ class DuplTaskReformer(Reformer):
         self.xs = tf.placeholder(tf.int32, shape=[N, None], name='ar_input')
         self.T = tf.placeholder(tf.int64, name='ar_input_length')
 
-        tT = self.bucket_size * 2
-        pad_num = (tT - (self.T % tT)) % tT
-
-        xs = tf.pad(self.xs, [[0, 0], [0, pad_num]])
-
-        _, y1, y2 = self.encode(xs, seq_len=self.T)
+        _, y1, y2 = self.encode(self.xs, seq_len=self.T)
         memory = tf.reduce_mean(tf.stack([y1, y2], 0), 0)
         logits = self.to_out(memory)
 
@@ -83,8 +78,8 @@ if __name__ == '__main__':
     ap.add_argument('-bs', '--bucket_size', default=4, type=int)
     ap.add_argument('-l', '--seq_len', default=32, type=int)
     ap.add_argument('-vs', '--vocab_size', default=64, type=int)
-    ap.add_argument('-lr', '--learning_rate', default=1e-3, type=float)
-    ap.add_argument('-f', '--is_full', default=True, type=bool)
+    ap.add_argument('-lr', '--learning_rate', default=1e-4, type=float)
+    ap.add_argument('-f', '--is_full', default=False, type=bool)
 
     args = ap.parse_args()
 
