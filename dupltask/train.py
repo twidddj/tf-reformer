@@ -105,14 +105,13 @@ if __name__ == '__main__':
     manual_grad = args.mode is not 'auto'
 
     import os
-
-    if manual_grad:
-        log_dir_tmpl += "_manual"
-
     if is_full:
         log_dir = log_dir_full_attn_tmpl.format(seq_len)
     else:
         log_dir = log_dir_tmpl.format(seq_len, num_hashes, bucket_size)
+
+    if manual_grad:
+        log_dir += "_manual"
 
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)

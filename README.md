@@ -40,7 +40,7 @@ python -m dupltask.test --test_num_hashes 8 -b 100 -n 100 -dir dupltask/log_dir/
 ```
 > `accuracy: 0.9999, elapsed: 66.41s`
 ```
-python -m dupltask.test --test_num_hashes 2 --test_bucket_size 4 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_full
+python -m dupltask.test --test_num_hashes 2 --test_bucket_size 4 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq32_full_manual
 ```
 > `accuracy: 0.7413, elapsed: 22.43s`
 
