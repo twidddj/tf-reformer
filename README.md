@@ -50,7 +50,7 @@ python -m dupltask.test --test_num_hashes 2 -b 1 -n 10 -dir dupltask/log_dir/lsh
 ```
 > `accuracy: 0.9710, elapsed: 85.33s`
 
-* Full-attention mode
+* Full-attention mode ( set `--is_full 1`)
 ```
 python -m dupltask.test --is_full 1 -b 1 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64
 ```
