@@ -146,3 +146,19 @@ class Reformer(TFModel):
         train_op = opt.apply_gradients(grad_and_vars)
         self.saver = tf.train.Saver(max_to_keep=5)
         return loss, train_op, grad_and_vars
+
+    def build_ar_gen(self, xs, gen_len, init_len=0):
+        T = init_len
+        for i in range(gen_len):
+            _, y1, y2 = self.encode(xs, seq_len=T)
+            memory = tf.reduce_mean(tf.stack([y1, y2], 0), 0)
+            logits = self.to_out(memory)
+            preds = tf.argmax(logits[:, T - 1], -1)
+            preds = tf.expand_dims(preds, -1)
+
+            T += 1
+            xs = tf.concat([xs, preds], -1)
+
+        self.saver = tf.train.Saver(max_to_keep=5)
+
+        return xs
