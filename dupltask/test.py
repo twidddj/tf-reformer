@@ -36,12 +36,9 @@ if __name__ == '__main__':
     test_nr = args.test_num_hashes or num_hashes
     test_bs = args.test_bucket_size or bucket_size
 
-    xs = tf.placeholder(tf.int32, shape=[N, seq_len])
-    lengths = tf.placeholder(tf.int32, shape=[N, ])
-
     model = DuplTaskReformer(d_model, d_ff, num_heads, vocab_size, num_blocks, seq_len, is_training=False,
                              num_hashes=test_nr, bucket_size=test_bs, is_full=args.is_full)
-    model.build_for_ar_gen(N)
+    model.build_ar_gen(N)
 
     log_dir = args.model_dir
 

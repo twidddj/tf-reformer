@@ -26,7 +26,7 @@ class DuplTaskReformer(Reformer):
         loss = tf.reduce_mean(tf.reduce_sum(loss, -1))
         return loss
 
-    def build_for_ar_gen(self, N):
+    def build_ar_gen(self, N):
         self.xs = tf.placeholder(tf.int32, shape=[N, None], name='ar_input')
         self.T = tf.placeholder(tf.int64, name='ar_input_length')
 
@@ -50,13 +50,11 @@ class DuplTaskReformer(Reformer):
         result = result[:, :seg_len + 2] #  0w0
         sample_len = result.shape[-1]
 
-        _logits = sess.run(self.gen, feed_dict={self.xs: result, self.T: sample_len})
-        _preds = np.argmax(_logits[:, sample_len-1], -1)
         for t in range(seg_len):
-            sample_len += 1
-            result = np.concatenate([result, _preds.reshape(-1, 1)], -1)
             _logits = sess.run(self.gen, feed_dict={self.xs: result, self.T: sample_len})
-            _preds = np.argmax(_logits[:, sample_len-1], -1)
+            _preds = np.argmax(_logits[:, sample_len - 1], -1)
+            result = np.concatenate([result, _preds.reshape(-1, 1)], -1)
+            sample_len += 1
         return result
 
 
@@ -123,7 +121,7 @@ if __name__ == '__main__':
     model = DuplTaskReformer(d_model, d_ff, num_heads, vocab_size, num_blocks, seq_len,
                              num_hashes=num_hashes, bucket_size=bucket_size, is_full=is_full)
     loss, train_op, gvs = model.train(xs, ys, lr, manual_grad=manual_grad)
-    model.build_for_ar_gen(1)
+    model.build_ar_gen(1)
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
