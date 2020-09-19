@@ -68,7 +68,7 @@ def positional_encoding(inputs,
         if masking:
             outputs = tf.where(tf.equal(inputs, 0), inputs, outputs)
 
-        return tf.to_float(outputs)
+        return tf.cast(outputs, tf.float32)
 
 
 def ln(inputs, epsilon=1e-8, scope="ln"):

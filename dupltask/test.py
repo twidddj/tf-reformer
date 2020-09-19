@@ -1,9 +1,12 @@
 import os
 import numpy as np
-import tensorflow as tf
 from time import time
 import argparse
 from dupltask.train import DuplTaskReformer, get_sample
+import tensorflow.compat.v1 as tf
+tf.disable_v2_behavior()
+
+print(tf.__version__)
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()

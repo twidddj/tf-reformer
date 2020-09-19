@@ -43,7 +43,9 @@ def hash_vec(x, x_len, num_hashes, bucket_size, dropout_rate=0, training=True):
     # Hashing
     rotations_shape = (1, dim, num_hashes, rot_size // 2)
     random_rotations = tf.random.normal(rotations_shape)
-    x = tf.layers.dropout(x, rate=dropout_rate, training=training)
+    random_rotations = tf.tile(random_rotations, [N, 1, 1, 1])
+    if training:
+        x = tf.nn.dropout(x, dropout_rate)
 
     rotated_vecs = tf.einsum('btf,bfhi->bhti', x, random_rotations)
     rotated_vecs = tf.concat([rotated_vecs, -rotated_vecs], axis=-1)  # N x num_hashes x T x rot_size
@@ -61,11 +63,11 @@ def hash_vec(x, x_len, num_hashes, bucket_size, dropout_rate=0, training=True):
     return buckets
 
 
-def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_mask=None,
+def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_mask=None,
                   dropout_rate=0, training=True, causality=False):
     N, _, dim = qk.shape
 
-    if is_full:
+    if use_full:
         # full attn
         buckets = tf.zeros((N, T), tf.int64)
         n_buckets = 1
@@ -101,8 +103,8 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_ma
     # 정렬된 hash 인덱스를 이용해서 데이터 개더링
     """
     st = sticker % T
-    sqk = qk if is_full else batched_index_select(qk, st)
-    sv = v if is_full else batched_index_select(v, st)
+    sqk = qk if use_full else batched_index_select(qk, st)
+    sv = v if use_full else batched_index_select(v, st)
 
     """  
     # 버킷 별로 데이터를 reshape
@@ -128,7 +130,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_ma
     # 단 한 개의 이전 chunk를 attend할 수 있게
     # 시작 경계의 벡터는 다르게 해시된 chunk를 가져 오지만 어차피 마스킹 되므로 노 상관
     """
-    if not is_full:
+    if not use_full:
         def look_one_back(x):
             x_extra = tf.concat([x[:, -1:, ...], x[:, :-1, ...]], axis=1)
             return tf.concat([x, x_extra], axis=2)
@@ -144,7 +146,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_ma
     # 다른 해시 값일 경우 마스킹 처리 하기 위한 코드
     # 어차피 청크 내 모든 벡터들에 대해 계산을 해야되기 때문에 꼭 필요하지는 않은 것 같음
     """
-    if not is_full:
+    if not use_full:
         q_sbuckets = tf.gather(buckets, sticker, batch_dims=1)
         q_sbuckets = tf.reshape(q_sbuckets, (N, chunk_size, -1))
         kv_sbuckets = look_one_back(q_sbuckets)
@@ -155,7 +157,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_ma
         mq = tf.gather(input_mask, st, batch_dims=1)
         mq = tf.reshape(mq, (N, chunk_size, -1))
         mq = tf.cast(mq, tf.int32)
-        if not is_full:
+        if not use_full:
             mkv = look_one_back(mq)
             mask = (1 - mq[:, :, :, None] * mkv[:, :, None, :])
         else:
@@ -175,7 +177,8 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_ma
     # normalize dots on each bucket
     dots_logsumexp = tf.math.reduce_logsumexp(dots, axis=-1, keepdims=True)
     dots = tf.exp(dots - dots_logsumexp)
-    dots = tf.layers.dropout(dots, rate=dropout_rate, training=training)
+    if training:
+        dots = tf.nn.dropout(dots, dropout_rate)
 
     # weighted sum
     bo = tf.einsum('buij,buje->buie', dots, bv)
@@ -183,9 +186,9 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, is_full=False, input_ma
     slogits = tf.reshape(dots_logsumexp, (N, -1,))
 
     # undo sort
-    o = so if is_full else batched_index_select(so, undo_sort)
+    o = so if use_full else batched_index_select(so, undo_sort)
     o = tf.reshape(o, (N, num_hashes, -1, qk.shape[-1]))
-    logits = slogits if is_full else batched_index_select(slogits, undo_sort)
+    logits = slogits if use_full else batched_index_select(slogits, undo_sort)
     logits = tf.reshape(logits, (N, num_hashes, -1, 1))
 
     # normalize outputs on each hash
@@ -230,7 +233,7 @@ def multihead_lsh_attention(queries, keys, values, seq_len=None,
         for qk, v in zip(Q_, V_):
             outputs.append(lsh_attention(qk, v, seq_len,
                                          num_hashes=num_hashses, bucket_size=bucket_size, input_mask=input_masks,
-                                         dropout_rate=dropout_rate, training=training, causality=causality, is_full=is_full))
+                                         dropout_rate=dropout_rate, training=training, causality=causality, use_full=is_full))
 
         outputs = tf.concat(outputs, -1)
 

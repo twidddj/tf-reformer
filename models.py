@@ -4,7 +4,7 @@ import tensorflow as tf
 
 from transformer_modules import positional_encoding
 from modules import multihead_lsh_attention, ff, ReversibleBlock, ReversibleSequence
-
+tf.keras.optimizers.Adam
 
 class TFModel:
     def save(self, sess, logdir, step):
@@ -49,11 +49,10 @@ class Reformer(TFModel):
         self.causality = causality
         self.is_full = is_full
 
-        self.embeddings = tf.compat.v1.get_variable('weight_mat',
-                                          dtype=tf.float32,
-                                          shape=(vocab_size, d_model),
-                                          initializer=tf.contrib.layers.xavier_initializer())
+        initializer = tf.random_normal_initializer()
+        self.embeddings = tf.Variable(initializer([vocab_size, d_model]), name='weight_mat')
 
+    tf.keras.layers.LayerNormalization()
     def encode(self, xs, seq_len):
         # assert T % bucket_size == 0
         tT = self.bucket_size
@@ -137,7 +136,8 @@ class Reformer(TFModel):
             grad_and_vars = list(zip(tf.tuple(grads_list), vars_list))
 
             # for optimization
-            opt = tf.train.GradientDescentOptimizer(lr)
+            # opt = tf.train.GradientDescentOptimizer(lr)
+            opt = tf.train.MomentumOptimizer(lr)
 
         else:
             opt = tf.train.AdamOptimizer(lr)
