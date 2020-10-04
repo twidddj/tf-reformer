@@ -19,6 +19,8 @@ def get_sample(vocab_size, seg_len):
 
 @tf.function
 def loss_object(logits, labels):
+    _, seq_len, _ = logits.shape
+    seg_len = seq_len // 2 - 1
     logits = tf.slice(logits, [0, seq_len // 2, 0], [-1, seg_len, -1])
     losses = tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
     loss = tf.reduce_mean(losses)
@@ -43,7 +45,7 @@ class Trainer:
     def __init__(
             self,
             model,
-            loss_object=None,
+            loss_func=None,
             optimizer=None,
             checkpoint_dir='./checkpoints',
             batch_size=None,
@@ -51,7 +53,7 @@ class Trainer:
     ):
         self.batch_size = batch_size
         self.model = model
-        self.loss_object = loss_object
+        self.loss_object = loss_func
         self.optimizer = optimizer
         self.checkpoint_dir = checkpoint_dir
         self.max_iter = max_iter
@@ -198,7 +200,7 @@ if __name__ == '__main__':
     optimizer = tf.keras.optimizers.Adam(learning_rate)
 
     trainer = Trainer(model, checkpoint_dir=log_dir,
-                      optimizer=optimizer, batch_size=batch_size, max_iter=150000, loss_object=loss_object)
+                      optimizer=optimizer, batch_size=batch_size, max_iter=150000, loss_func=loss_object)
 
     def data_load():
         xs = np.stack([get_sample(vocab_size, seg_len) for _ in range(batch_size)])
