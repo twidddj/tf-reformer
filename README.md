@@ -38,16 +38,6 @@ python -m dupltask.test --use_full 1 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq
 > `accuracy: 0.9986, elapsed: 13.34s`
 
 ##### 2. test seq_len: 1024
-```
-python -m dupltask.test --test_num_hashes 2 -b 1 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64
-```
-> `accuracy: 0.9710, elapsed: 85.33s`
-
-* Full-attention mode ( set `--use_full 1`)
-```
-python -m dupltask.test --use_full 1 -b 1 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64
-```
-> `accuracy: 1.0000, elapsed: 106.72s`
 
 ## Requirements
 * Code is tested on TensorFlow version 2.3.0 for Python 3.7.
