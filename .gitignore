@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# tf logs
+events.out.*
+
 # C extensions
 *.so
 
