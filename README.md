@@ -1,6 +1,8 @@
 # Reformer 
 This repository provides an implementation of [Reformer : Efficient Transformer](https://openreview.net/pdf?id=rkgNKkHtvB) in Tensorflow.
 
+You can find the codes written tensorflow 1.x in [here](https://github.com/twidddj/tf-reformer/tree/tf1)
+
 ## Features
 - [x] Synthetic task: duplicate a sequence of symbols 
 - [x] Manual gradients
