@@ -1,1 +1,0 @@
-{"batch_size": 8, "mode": "auto", "d_model": 128, "d_ff": 256, "num_blocks": 1, "num_heads": 4, "num_hashes": 2, "bucket_size": 64, "seq_len": 1024, "vocab_size": 64, "learning_rate": 0.001}

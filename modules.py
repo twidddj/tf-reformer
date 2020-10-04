@@ -1,20 +1,18 @@
 """
 modules for reformer
-codes are borrowed from
+some codes are borrowed from
 https://github.com/lucidrains/reformer-pytorch
 https://github.com/cerebroai/reformers
 https://github.com/renmengye/revnet-public
 """
 
 import tensorflow as tf
-from transformer_modules import mask, ln
+import numpy as np
 
 
-def sort_key_val(t1, t2, N, dim=-1):
+def sort_key_val(t1, t2, dim=-1):
     ids = tf.argsort(t1, axis=dim)
     values = tf.gather(t1, ids, batch_dims=1)
-    # t2 = tf.broadcast_to(t2, t1.shape)
-    t2 = tf.tile(t2, [N, 1])
     return values, tf.gather(t2, ids, batch_dims=1)
 
 
@@ -28,13 +26,13 @@ def make_unit_length(x, epsilon=1e-6):
 
 
 def mask_out(x, mask, mask_val=float('-inf')):
-    present = tf.cast(1 - tf.cast(mask, tf.int32), tf.bool)
+    present = tf.math.logical_not(mask)
     mask = tf.cast(mask, tf.float32)
     x = tf.where(present, x, mask * mask_val)
     return x
 
 
-def hash_vec(x, x_len, num_hashes, bucket_size, dropout_rate=0, training=True):
+def hash_vec(x, x_len, num_hashes, bucket_size, seed=None, dropout_rate=0, training=True):
     N, T, dim = x.shape
 
     n_buckets = x_len // bucket_size
@@ -42,7 +40,7 @@ def hash_vec(x, x_len, num_hashes, bucket_size, dropout_rate=0, training=True):
 
     # Hashing
     rotations_shape = (1, dim, num_hashes, rot_size // 2)
-    random_rotations = tf.random.normal(rotations_shape)
+    random_rotations = tf.random.normal(rotations_shape, seed=seed)
     random_rotations = tf.tile(random_rotations, [N, 1, 1, 1])
     if training:
         x = tf.nn.dropout(x, dropout_rate)
@@ -63,7 +61,7 @@ def hash_vec(x, x_len, num_hashes, bucket_size, dropout_rate=0, training=True):
     return buckets
 
 
-def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_mask=None,
+def lsh_attention(qk, v, T, seed=None, num_hashes=2, bucket_size=4, use_full=False, input_mask=None,
                   dropout_rate=0, training=True, causality=False):
     N, _, dim = qk.shape
 
@@ -73,7 +71,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
         n_buckets = 1
         num_hashes = 1
     else:
-        buckets = hash_vec(qk, T, num_hashes, bucket_size, dropout_rate=dropout_rate, training=training)
+        buckets = hash_vec(qk, T, num_hashes, bucket_size, seed=seed, dropout_rate=dropout_rate, training=training)
         n_buckets = T // bucket_size
 
     """
@@ -84,16 +82,25 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
     the bucket after sorted  [0, 3, 4, 7, 8, 11]
     """
     ticker = tf.expand_dims(tf.range(num_hashes * T), axis=0)
-    buckets_and_t = T * buckets + tf.cast((ticker % T), tf.int64)
-    buckets_and_t = tf.stop_gradient(buckets_and_t)
-    sbuckets_and_t, sticker = sort_key_val(buckets_and_t, ticker, N, dim=-1)
+    ticker = tf.tile(ticker, [N, 1])
+
+    if use_full:
+        buckets_and_t, sbuckets_and_t, sticker = ticker, ticker, ticker
+    else:
+        buckets_and_t = T * buckets + tf.cast((ticker % T), tf.int64)
+        buckets_and_t = tf.stop_gradient(buckets_and_t)
+        sbuckets_and_t, sticker = sort_key_val(buckets_and_t, ticker, dim=-1)
 
     """
     It needs to undo sort after attention operation for each hash bucket.
     # 해시버킷 별 attention 후 원래 순서로 복원
     """
-    _, undo_sort = sort_key_val(sticker, ticker, N, dim=-1)
+    _, undo_sort = sort_key_val(sticker, ticker, dim=-1)
 
+    """
+    No need to store the memory of gradients for these variables
+    # 이 변수들에 대해서는 그라디언트 메모리를 가지고 있을 필요가 없음
+    """
     sticker = tf.stop_gradient(sticker)
     undo_sort = tf.stop_gradient(undo_sort)
 
@@ -134,11 +141,13 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
         def look_one_back(x):
             x_extra = tf.concat([x[:, -1:, ...], x[:, :-1, ...]], axis=1)
             return tf.concat([x, x_extra], axis=2)
+
         bk = look_one_back(bk)
         bv = look_one_back(bv)
         bkv_t = look_one_back(bkv_t)
 
     # Dot-product attention.
+    # batch x (bucket_size * num_hashes) x bucket_size x (bucket_size * 2(look_one_back))
     dots = tf.einsum('bhie,bhje->bhij', bq, bk) * (tf.cast(bq.shape[-1], tf.float32) ** -0.5)
 
     """
@@ -150,7 +159,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
         q_sbuckets = tf.gather(buckets, sticker, batch_dims=1)
         q_sbuckets = tf.reshape(q_sbuckets, (N, chunk_size, -1))
         kv_sbuckets = look_one_back(q_sbuckets)
-        mask = 1 - tf.cast(tf.equal(q_sbuckets[:, :, :, None], kv_sbuckets[:, :, None, :]), tf.int32)
+        mask = tf.logical_not(tf.equal(q_sbuckets[:, :, :, None], kv_sbuckets[:, :, None, :]))
         dots = mask_out(dots, mask)
 
     if input_mask is not None:
@@ -162,6 +171,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
             mask = (1 - mq[:, :, :, None] * mkv[:, :, None, :])
         else:
             mask = (1 - mq[:, :, :, None] * mq[:, :, None, :])
+        mask = tf.cast(mask, tf.bool)
         dots = mask_out(dots, mask)
 
     # Causal masking
@@ -181,7 +191,7 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
         dots = tf.nn.dropout(dots, dropout_rate)
 
     # weighted sum
-    bo = tf.einsum('buij,buje->buie', dots, bv)
+    bo = tf.einsum('buij, buje->buie', dots, bv)
     so = tf.reshape(bo, (N, -1, bo.shape[-1]))
     slogits = tf.reshape(dots_logsumexp, (N, -1,))
 
@@ -197,135 +207,231 @@ def lsh_attention(qk, v, T, num_hashes=2, bucket_size=4, use_full=False, input_m
     return out
 
 
-def multihead_lsh_attention(queries, keys, values, seq_len=None,
-                            is_full=False,
-                            max_seq_len=None,
-                            num_hashses=2,
-                            bucket_size=4,
-                            num_heads=8,
-                            dropout_rate=0,
-                            training=True,
-                            causality=False,
-                            scope="multihead_lsh_attention"):
+def pad_len_lsh(bs, seq_len):
+    return (bs - (seq_len % bs)) % bs
 
-    N, T, d_model = queries.shape
-    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        # Linear projections, Q=K
-        with tf.compat.v1.variable_scope('qk_prj', reuse=tf.compat.v1.AUTO_REUSE):
-            Q = tf.layers.dense(queries, d_model, use_bias=True)  # (N, T_q, d_model)
-        V = tf.layers.dense(values, d_model, use_bias=True)
 
-        # Split and concat
-        Q_ = tf.split(Q, num_heads, axis=2)
-        V_ = tf.split(V, num_heads, axis=2)
+class Config:
+    def __init__(self, _dict):
+        self.__dict__ = _dict
+
+
+class PositionalEncoder(tf.keras.layers.Layer):
+    def __init__(self, maxlen):
+        super(PositionalEncoder, self).__init__()
+        self.maxlen = maxlen
+
+    def build(self, input_shape):
+        _, _, D = input_shape
+
+        # First part of the PE function: sin and cos argument
+        position_enc = np.array([
+            [pos / np.power(10000, (i - i % 2) / D) for i in range(D)]
+            for pos in range(self.maxlen)])
+
+        # Second part, apply the cosine to even columns and sin to odds.
+        position_enc[:, 0::2] = np.sin(position_enc[:, 0::2])  # dim 2i
+        position_enc[:, 1::2] = np.cos(position_enc[:, 1::2])  # dim 2i+1
+        self.params = tf.convert_to_tensor(position_enc, tf.float32)  # (maxlen, E)
+
+    def call(self, inputs):
+        N, T, _ = inputs.shape
+
+        position_ind = tf.tile(tf.expand_dims(tf.range(T), 0), [N, 1])  # (N, T)
+        outputs = tf.nn.embedding_lookup(self.params, position_ind)
+
+        return outputs
+
+
+class FeedForward(tf.keras.layers.Layer):
+    def __init__(self, d_ff, d_model):
+        super(FeedForward, self).__init__()
+        assert d_ff // d_model
+        self.d_ff = d_ff
+        self.d_model = d_model
+        self.n_chunk = d_ff // d_model
+
+        self.ln = tf.keras.layers.LayerNormalization()
+
+    def build(self, input_shape):
+        dim = input_shape[-1]
+        self.W1 = self.add_weight(name='W1', shape=[dim, self.d_ff], trainable=True)
+        self.B1 = self.add_weight(name='B1', shape=[self.d_ff], trainable=True)
+        self.W2 = self.add_weight(name='W2', shape=[self.d_ff, self.d_model], trainable=True)
+        self.B2 = self.add_weight(name='B2', shape=[self.d_model], trainable=True)
+
+    def call(self, inputs):
+        outputs = tf.zeros_like(inputs)
+        for i in range(self.n_chunk):
+            w1 = tf.slice(self.W1, [0, i * self.d_model], [-1, self.d_model])
+            b1 = tf.slice(self.B1, [i * self.d_model], [self.d_model])
+            h0 = tf.nn.relu(tf.matmul(inputs, w1) + b1)
+            w2 = tf.slice(self.W2, [i * self.d_model, 0], [self.d_model, -1])
+            outputs += tf.matmul(h0, w2)
+        outputs += self.B2
+
+        outputs = self.ln(outputs)
+        return outputs
+
+
+class MultiheadLSHSelfAttention(tf.keras.layers.Layer):
+    def __init__(self, config, max_len, dropout_rate=0.0):
+
+        super(MultiheadLSHSelfAttention, self).__init__()
+
+        self.config = config
+        self.max_len = max_len
+        self.dropout_rate = dropout_rate
+        self.to_Q = tf.keras.layers.Dense(config.dim)
+        self.to_V = tf.keras.layers.Dense(config.dim)
+        self.ln = tf.keras.layers.LayerNormalization()
+
+    def call(self, inputs, seq_len=None, seed=None, training=None):
+        N, T, _ = inputs.shape
+
+        Q = self.to_Q(inputs)
+        V = self.to_V(inputs)
+
+        # Split
+        Q_ = tf.split(Q, self.config.num_heads, axis=2)
+        V_ = tf.split(V, self.config.num_heads, axis=2)
 
         input_masks = None
-        if seq_len is not None:
-            input_mask = tf.sequence_mask(seq_len, max_seq_len)
+
+        # AR생성에서 실제 seq_len 이후 데이터는 마스크 되어야 함
+        if not training:
+            assert seq_len is not None
+            input_mask = tf.sequence_mask(seq_len, self.max_len)
             input_mask = tf.expand_dims(input_mask, 0)
             input_masks = tf.tile(input_mask, [N, 1])
 
-            # assert seq_len % bucket_size == 0
-            tT = bucket_size
-            seq_len += (tT - (seq_len % tT)) % tT
+            seq_len += pad_len_lsh(self.config.bucket_size, seq_len)
+        else:
+            # training 중 seq_len = 최대 시퀀스 길이
+            seq_len = T
 
         outputs = []
         for qk, v in zip(Q_, V_):
             outputs.append(lsh_attention(qk, v, seq_len,
-                                         num_hashes=num_hashses, bucket_size=bucket_size, input_mask=input_masks,
-                                         dropout_rate=dropout_rate, training=training, causality=causality, use_full=is_full))
+                                         seed=seed,
+                                         num_hashes=self.config.num_hashes,
+                                         bucket_size=self.config.bucket_size,
+                                         input_mask=input_masks,
+                                         dropout_rate=self.dropout_rate,
+                                         training=training,
+                                         causality=self.config.causality,
+                                         use_full=self.config.use_full))
 
         outputs = tf.concat(outputs, -1)
+        outputs = self.ln(outputs)
 
-        # Normalize
-        outputs = ln(outputs)
-    return outputs
-
-
-def ff(x, num_units, scope="positionwise_feedforward"):
-    d_ff, d_model = num_units
-    assert d_ff % d_model == 0
-    n_chunk = d_ff // d_model
-    with tf.compat.v1.variable_scope(scope, reuse=tf.compat.v1.AUTO_REUSE):
-        W1 = tf.compat.v1.get_variable('W1', [d_model, d_ff])
-        B1 = tf.compat.v1.get_variable('B1', [d_ff])
-        W2 = tf.compat.v1.get_variable('W2', [d_ff, d_model])
-        B2 = tf.compat.v1.get_variable('B2', [d_model])
-
-        # naive chunking
-        outputs = tf.zeros_like(x)
-        for i in range(n_chunk):
-            w1 = tf.slice(W1, [0, i * d_model], [-1, d_model])
-            b1 = tf.slice(B1, [i * d_model], [d_model])
-            h0 = tf.nn.relu(tf.matmul(x, w1) + b1)
-            w2 = tf.slice(W2, [i * d_model, 0], [d_model, -1])
-            outputs += tf.matmul(h0, w2)
-        outputs += B2
-
-        # Normalize
-        outputs = ln(outputs)
-
-    return outputs
+        return outputs
 
 
-class ReversibleSequence:
-    def __init__(self, blocks):
-        self.blocks = blocks
-        self.name_tmpl = "num_blocks_{}"
+class ReformerBlock(tf.keras.layers.Layer):
+    def __init__(self, d_model, d_ff, max_len, attn_config, ff_chunk_size=None, dropout_rate=0.0):
+        super(ReformerBlock, self).__init__()
 
-    def __call__(self, x1, x2):
-        for i, block in enumerate(self.blocks):
-            name = self.name_tmpl.format(i)
-            with tf.compat.v1.variable_scope(name):
-                x1, x2 = block(x1, x2)
-                block.f.t_vars = tf.compat.v1.trainable_variables(name + "/multihead_lsh_attention")
-                block.g.t_vars = tf.compat.v1.trainable_variables(name + "/positionwise_feedforward")
-        return x1, x2
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.max_len = max_len
+        self.dropout_rate = dropout_rate
+        self.ff_chunk_size = ff_chunk_size
+        self.seed = None
 
-    def compute_gradients(self, y1, y2, dy1, dy2):
-        grads_all = []
-        vars_all = []
+        self.attn = MultiheadLSHSelfAttention(attn_config, max_len, dropout_rate=dropout_rate)
+        self.ff = FeedForward(d_ff, d_model)
 
-        for i in reversed(range(len(self.blocks))):
-            block = self.blocks[i]
-            name = self.name_tmpl.format(i)
-            with tf.compat.v1.variable_scope(name, reuse=True):
-                y1, y2, dy1, dy2, _grads, _vars = block.compute_gradients(y1, y2, dy1, dy2)
-                grads_all.extend(_grads)
-                vars_all.extend(_vars)
+    def chunked_ff(self, y1, training=None):
+        result = []
+        T = y1.shape[1]
+        for i in range((T // self.ff_chunk_size) + 1):
+            cs = min(self.ff_chunk_size, T - i * self.ff_chunk_size)
+            if cs == 0:
+                break
 
-        return y1, y2, dy1, dy2, grads_all, vars_all
+            chunk_idx = i * self.ff_chunk_size
+            _y1 = tf.slice(y1, [0, chunk_idx, 0], [-1, cs, -1])
+            result.append(self.ff(_y1, training=training))
+        return result
 
+    # reversible
+    def call(self, x1, x2, t=None, seed=None, training=None):
+        y1 = x1 + self.attn(x2, t, seed=seed, training=training)
+        if self.ff_chunk_size is None:
+            ff_y1 = self.ff(y1, training=training)
+        else:
+            chunked_ff_y1 = self.chunked_ff(y1, training=training)
+            ff_y1 = tf.concat(chunked_ff_y1, axis=1)
 
-class ReversibleBlock:
-    def __init__(self, f, g):
-        self.f = f
-        self.g = g
-        self.t_vars = None
-
-    def __call__(self, x1, x2):
-        y1 = x1 + self.f(x2)
-        y2 = x2 + self.g(y1)
+        y2 = x2 + ff_y1
+        self.seed = seed
         return y1, y2
 
     def compute_gradients(self, y1, y2, dy1, dy2):
-        gy1 = self.g(y1)
-        x2 = y2 - gy1
-        fx2 = self.f(x2)
-        x1 = y1 - fx2
+        with tf.GradientTape(persistent=True) as tape:
+            tape.watch(y1)
+            tape.watch(y2)
 
-        grads_combined = tf.gradients(gy1, [y1] + self.g.t_vars, dy2, gate_gradients=True)
-        dx1 = dy1 + grads_combined[0]
-        dg = grads_combined[1:]
+            if self.ff_chunk_size is None:
+                gy1 = self.ff(y1, training=True)
+                x2 = y2 - gy1
+            else:
+                chunked_x2, chunked_gy1, chunked_y1, chunked_dy2 = [], [], [], []
+                T = y1.shape[1]
+                for i in range((T // self.ff_chunk_size) + 1):
+                    cs = min(self.ff_chunk_size, T - i * self.ff_chunk_size)
+                    if cs == 0:
+                        break
 
-        grads_combined = tf.gradients(fx2, [x2] + self.f.t_vars, dx1, gate_gradients=True)
+                    chunk_idx = i * self.ff_chunk_size
+                    _y1 = tf.slice(y1, [0, chunk_idx, 0], [-1, cs, -1])
+                    _y2 = tf.slice(y2, [0, chunk_idx, 0], [-1, cs, -1])
+                    _dy2 = tf.slice(dy2, [0, chunk_idx, 0], [-1, cs, -1])
+
+                    _gy1 = self.ff(_y1, training=True)
+                    _x2 = _y2 - _gy1
+
+                    chunked_y1.append(_y1)
+                    chunked_gy1.append(_gy1)
+                    chunked_x2.append(_x2)
+                    chunked_dy2.append(_dy2)
+
+                x2 = tf.concat(chunked_x2, axis=1)
+            fx2 = self.attn(x2, self.max_len, seed=self.seed, training=True)
+            x1 = y1 - fx2
+
+        if self.ff_chunk_size is None:
+            grads_combined = tape.gradient(gy1, [y1] + self.ff.trainable_variables, dy2)
+            dx1 = dy1 + grads_combined[0]
+            dg = grads_combined[1:]
+        else:
+            chunked_dy1, chunked_dg = [], []
+            T = y1.shape[1]
+            for i in range(len(chunked_x2)):
+                _gy1 = chunked_gy1[i]
+                _y1 = chunked_y1[i]
+                _dy2 = chunked_dy2[i]
+
+                grad_dy1 = tape.gradient(_gy1, [_y1] + self.ff.trainable_variables, _dy2)
+                chunked_dy1.append(grad_dy1[0])
+                chunked_dg.append(grad_dy1[1:])
+
+            dx1 = dy1 + tf.concat(chunked_dy1, axis=1)
+            dg = []
+
+            for j in range(len(chunked_dg[0])):
+                item = 0
+                for i in range(len(chunked_dg)):
+                    item += chunked_dg[i][j]
+                dg.append(item)
+
+        grads_combined = tape.gradient(fx2, [x2] + self.attn.trainable_variables, dx1)
         dx2 = dy2 + grads_combined[0]
         df = grads_combined[1:]
 
         _grads = df + dg
-        _vars = self.f.t_vars + self.g.t_vars
+        _vars = self.attn.trainable_variables + self.ff.trainable_variables
+        del tape
 
-        with tf.control_dependencies(_grads):
-            dy1, dy2 = tf.identity(dx1), tf.identity(dx2)
-
-        return x1, x2, dy1, dy2, _grads, _vars
+        return x1, x2, dx1, dx2, _grads, _vars

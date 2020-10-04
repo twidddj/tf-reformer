@@ -1,164 +1,129 @@
-import os
-import sys
 import tensorflow as tf
+import numpy as np
 
-from transformer_modules import positional_encoding
-from modules import multihead_lsh_attention, ff, ReversibleBlock, ReversibleSequence
-tf.keras.optimizers.Adam
-
-class TFModel:
-    def save(self, sess, logdir, step):
-        model_name = 'model.ckpt'
-        checkpoint_path = os.path.join(logdir, model_name)
-        sys.stdout.flush()
-        if not os.path.exists(logdir):
-            os.makedirs(logdir)
-        self.saver.save(sess, checkpoint_path, global_step=step)
-        print("{} model has stored.".format(step))
-
-    def load(self, sess, logdir):
-        ckpt = tf.train.get_checkpoint_state(logdir)
-        if ckpt:
-            print("\tCheckpoint found: {}".format(ckpt.model_checkpoint_path))
-            global_step = int(ckpt.model_checkpoint_path.split('/')[-1].split('-')[-1])
-            sys.stdout.write('\t')
-            self.saver.restore(sess, ckpt.model_checkpoint_path)
-            self.saver = tf.train.Saver(max_to_keep=5)
-            return global_step
-        else:
-            print('No checkpoint found')
-            return None
+from modules import PositionalEncoder, ReformerBlock, pad_len_lsh
 
 
-class Reformer(TFModel):
-    def __init__(self, d_model, d_ff, num_heads, vocab_size, num_blocks, max_len, dropout_rate=0.0, is_training=True,
-                 num_hashes=None, bucket_size=None, causality=False, is_full=False):
-        assert num_hashes is not None
-        assert bucket_size is not None
+class Reformer(tf.keras.Model):
+    def __init__(self, d_model, d_ff, vocab_size, max_len, num_blocks, attn_config,
+                 ff_chunk_size=None, dropout_rate=0.0):
+        super(Reformer, self).__init__()
 
         self.d_model = d_model
         self.d_ff = d_ff
-        self.num_heads = num_heads
         self.vocab_size = vocab_size
-        self.num_blocks = num_blocks
-        self.is_training = is_training
         self.max_len = max_len
         self.dropout_rate = dropout_rate
-        self.num_hashes = num_hashes
-        self.bucket_size = bucket_size
-        self.causality = causality
-        self.is_full = is_full
+        self.num_blocks = num_blocks
+        self.attn_config = attn_config
 
-        initializer = tf.random_normal_initializer()
-        self.embeddings = tf.Variable(initializer([vocab_size, d_model]), name='weight_mat')
+        self.embeddings = tf.keras.layers.Embedding(vocab_size, d_model)
+        self.positional_encoder = PositionalEncoder(max_len)
 
-    tf.keras.layers.LayerNormalization()
-    def encode(self, xs, seq_len):
-        # assert T % bucket_size == 0
-        tT = self.bucket_size
-        pad_num = (tT - (seq_len % tT)) % tT
-        xs = tf.pad(xs, [[0, 0], [0, pad_num]])
+        self.blocks = []
+        for i in range(num_blocks):
+            reformer = ReformerBlock(d_model, d_ff, max_len, attn_config, ff_chunk_size, dropout_rate=dropout_rate)
+            self.blocks.append(reformer)
 
-        # embedding
-        enc = tf.nn.embedding_lookup(self.embeddings, xs)  # (N, T1, dim)
+    def to_out(self, x1, x2):
+        memory = (x1 + x2) / 2
+        return tf.matmul(memory, tf.transpose(self.embeddings.variables[0]))
+
+    def to_emb(self, xs, training=None):
+        enc = self.embeddings(xs)
         enc *= self.d_model ** 0.5  # scale
+        enc += self.positional_encoder(enc)
+        if training:
+            enc = tf.nn.dropout(enc, self.dropout_rate)
+        return enc
 
-        enc += positional_encoding(enc, self.max_len)
-        enc = tf.layers.dropout(enc, self.dropout_rate, training=self.is_training)
+    def call(self, xs, seed=None, training=None):
+        if not training:
+            cur_len = xs.shape[1]
+            pad_num = pad_len_lsh(self.attn_config.bucket_size, cur_len)
+            xs = tf.pad(xs, [[0, 0], [0, pad_num]])
+        else:
+            cur_len = self.max_len
 
-        f = lambda x: multihead_lsh_attention(x, x, x,
-                                              is_full=self.is_full,
-                                              max_seq_len=self.max_len,
-                                              seq_len=seq_len,
-                                              num_hashses=self.num_hashes,
-                                              bucket_size=self.bucket_size,
-                                              num_heads=self.num_heads,
-                                              dropout_rate=self.dropout_rate,
-                                              training=self.is_training,
-                                              causality=self.causality)
-        g = lambda x: ff(x, num_units=[self.d_ff, self.d_model])
+        emb = self.to_emb(xs, training)
 
-        ## Blocks
-        blocks = [ReversibleBlock(f, g) for _ in range(self.num_blocks)]
+        y1, y2 = emb, emb
+        for block in self.blocks:
+            y1, y2 = block(y1, y2, cur_len, seed=seed, training=training)
 
-        self.layer = ReversibleSequence(blocks)
+        return emb, y1, y2
 
-        y1, y2 = self.layer(enc, enc)
-        return enc, y1, y2
+    def ar_gen(self, xs):
+        cur_len = xs.shape[1]
+        _, y1, y2 = self.call(xs, training=False)
+        logits = self.to_out(y1, y2)
+        y_pred = tf.argmax(logits[:, cur_len - 1], -1)
+        return y_pred
 
-    def to_out(self, memory):
-        weights = tf.transpose(self.embeddings)  # (d_model, vocab_size)
-        result = tf.einsum('ntd,dk->ntk', memory, weights)  # (N, T, vocab_size)
-        return result
+    def compute_gradients(self, tape, emb, y1, y2, loss):
+        grads_list = []
+        vars_list = []
+        emb_var = self.embeddings.trainable_variables[0]
 
-    def create_loss(self, xs, labels, memory):
-        raise NotImplementedError
+        _grads = tape.gradient(loss, [y1, y2, emb_var])
+        dy1, dy2 = _grads[0], _grads[1]
+        _grads = _grads[2:]
 
-    def train(self, xs, labels, lr, manual_grad=True):
-        T = tf.constant(self.max_len, tf.int64)
-        emb, y1, y2 = self.encode(xs, T)
-        memory = tf.reduce_mean(tf.stack([y1, y2], 0), 0)
+        grads_list.extend(_grads)
+        vars_list.append(emb_var)
 
-        # loss
-        loss = self.create_loss(xs, labels, memory)
+        y1, y2, dy1, dy2, _grads, _vars = self._compute_gradients(y1, y2, dy1, dy2)
+        grads_list.extend(_grads)
+        vars_list.extend(_vars)
+
+        d_emb = tf.convert_to_tensor(tape.gradient(emb, emb_var, dy1))
+        d_emb += tf.convert_to_tensor(tape.gradient(emb, emb_var, dy2))
+        grads_list[0] += d_emb
+
+        del tape
+
+        grad_and_vars = zip(grads_list, vars_list)
+        return grad_and_vars
+
+    def _compute_gradients(self, y1, y2, dy1, dy2):
+        grads_all = []
+        vars_all = []
+
+        for i in reversed(range(len(self.blocks))):
+            block = self.blocks[i]
+            y1, y2, dy1, dy2, _grads, _vars = block.compute_gradients(y1, y2, dy1, dy2)
+            grads_all.extend(_grads)
+            vars_all.extend(_vars)
+
+        return y1, y2, dy1, dy2, grads_all, vars_all
+
+    @tf.function
+    def train_step(self, xs, labels, loss_func, optimizer, manual_grad=True, max_seed=2**32):
+        random_item = np.random.randint(max_seed, size=2)
+        seed1 = random_item[0]
+        seed2 = random_item[1]
+
+        with tf.GradientTape(persistent=manual_grad) as tape:
+            tf.random.set_seed(seed1)
+            emb, y1, y2 = self.call(xs, seed=seed2, training=True)
+
+            if manual_grad:
+                y1, y2 = tf.stop_gradient(y1), tf.stop_gradient(y2)
+                tape.watch(y1)
+                tape.watch(y2)
+                
+            logits = self.to_out(y1, y2)
+            loss, y_pred = loss_func(logits, labels)
 
         if manual_grad:
-            # TODO: Adam optimizer
-
-            # grad and vars
-            tf.compat.v1.get_variable_scope().reuse_variables()
-
-            grads_list = []
-            vars_list = []
-            var_final = [tf.compat.v1.get_variable('weight_mat')]
-
-            _grads = tf.gradients(loss, [y1, y2] + var_final, gate_gradients=True)
-            dy1, dy2 = _grads[0], _grads[1]
-            _grads = _grads[2:]
-
-            grads_list.extend(_grads)
-            vars_list.extend(var_final)
-
-            with tf.control_dependencies(_grads):
-                dy1, dy2 = tf.identity(dy1), tf.identity(dy2)
-
-            y1, y2, dy1, dy2, _grads, _vars = self.layer.compute_gradients(y1, y2, dy1, dy2)
-            grads_list.extend(_grads)
-            vars_list.extend(_vars)
-
-            emb_var = tf.compat.v1.get_variable('weight_mat')
-            d_emb_dx1 = tf.gradients(emb, emb_var, dy1)
-            d_emb_dx2 = tf.gradients(emb, emb_var, dy2)
-            grads_list += d_emb_dx1
-            grads_list += d_emb_dx2
-            vars_list.extend([emb_var, emb_var])
-
-            grad_and_vars = list(zip(tf.tuple(grads_list), vars_list))
-
-            # for optimization
-            # opt = tf.train.GradientDescentOptimizer(lr)
-            opt = tf.train.MomentumOptimizer(lr)
-
+            tf.random.set_seed(seed1)
+            grad_and_vars = self.compute_gradients(tape, emb, y1, y2, loss)
         else:
-            opt = tf.train.AdamOptimizer(lr)
-            grad_and_vars = opt.compute_gradients(loss)
+            grads = tape.gradient(loss, self.trainable_variables)
+            grad_and_vars = zip(grads, self.trainable_variables)
 
-        train_op = opt.apply_gradients(grad_and_vars)
-        self.saver = tf.train.Saver(max_to_keep=5)
-        return loss, train_op, grad_and_vars
+        del tape
 
-    def build_ar_gen(self, xs, gen_len, init_len=0):
-        T = init_len
-        for i in range(gen_len):
-            _, y1, y2 = self.encode(xs, seq_len=T)
-            memory = tf.reduce_mean(tf.stack([y1, y2], 0), 0)
-            logits = self.to_out(memory)
-            preds = tf.argmax(logits[:, T - 1], -1)
-            preds = tf.expand_dims(preds, -1)
+        optimizer.apply_gradients(grad_and_vars)
 
-            T += 1
-            xs = tf.concat([xs, preds], -1)
-
-        self.saver = tf.train.Saver(max_to_keep=5)
-
-        return xs
+        return loss, y_pred
