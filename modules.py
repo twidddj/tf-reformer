@@ -62,7 +62,7 @@ def hash_vec(x, x_len, num_hashes, bucket_size, seed=None, dropout_rate=0, train
 
 
 def lsh_attention(qk, v, T, seed=None, num_hashes=2, bucket_size=4, use_full=False, input_mask=None,
-                  dropout_rate=0, training=True, causality=False):
+                  dropout_rate=0, training=True, causality=False, causal_start=None):
     N, _, dim = qk.shape
 
     if use_full:
@@ -176,7 +176,13 @@ def lsh_attention(qk, v, T, seed=None, num_hashes=2, bucket_size=4, use_full=Fal
 
     # Causal masking
     if causality:
-        mask = tf.greater(bkv_t[:, :, None, :], bq_t[:, :, :, None])
+        if causal_start is None:
+            mask = tf.greater(bkv_t[:, :, None, :], bq_t[:, :, :, None])
+        else:
+            _bkv_t = tf.where(bkv_t >= causal_start, bkv_t, 0)
+            _bq_t = tf.where(bq_t >= causal_start, bq_t, 0)
+            mask = tf.greater(_bkv_t[:, :, None, :], _bq_t[:, :, :, None])  # bkv_t > bq_t
+
         dots = mask_out(dots, mask)
 
     # Mask out attention to self except when no other targets are available.
@@ -217,9 +223,11 @@ class Config:
 
 
 class PositionalEncoder(tf.keras.layers.Layer):
-    def __init__(self, maxlen):
+    def __init__(self, maxlen, masking=False, mask_val=None):
         super(PositionalEncoder, self).__init__()
         self.maxlen = maxlen
+        self.masking = masking
+        self.mask_val = mask_val
 
     def build(self, input_shape):
         _, _, D = input_shape
@@ -240,13 +248,18 @@ class PositionalEncoder(tf.keras.layers.Layer):
         position_ind = tf.tile(tf.expand_dims(tf.range(T), 0), [N, 1])  # (N, T)
         outputs = tf.nn.embedding_lookup(self.params, position_ind)
 
+        # masks
+        if self.masking:
+            assert self.mask_val is not None
+            outputs = tf.where(tf.equal(inputs, self.mask_val), 0.0, outputs)
+
         return outputs
 
 
 class FeedForward(tf.keras.layers.Layer):
     def __init__(self, d_ff, d_model):
         super(FeedForward, self).__init__()
-        assert d_ff // d_model
+        assert (d_ff % d_model) == 0
         self.d_ff = d_ff
         self.d_model = d_model
         self.n_chunk = d_ff // d_model
@@ -320,118 +333,10 @@ class MultiheadLSHSelfAttention(tf.keras.layers.Layer):
                                          dropout_rate=self.dropout_rate,
                                          training=training,
                                          causality=self.config.causality,
+                                         causal_start=self.config.causal_start,
                                          use_full=self.config.use_full))
 
         outputs = tf.concat(outputs, -1)
         outputs = self.ln(outputs)
 
         return outputs
-
-
-class ReformerBlock(tf.keras.layers.Layer):
-    def __init__(self, d_model, d_ff, max_len, attn_config, ff_chunk_size=None, dropout_rate=0.0):
-        super(ReformerBlock, self).__init__()
-
-        self.d_model = d_model
-        self.d_ff = d_ff
-        self.max_len = max_len
-        self.dropout_rate = dropout_rate
-        self.ff_chunk_size = ff_chunk_size
-        self.seed = None
-
-        self.attn = MultiheadLSHSelfAttention(attn_config, max_len, dropout_rate=dropout_rate)
-        self.ff = FeedForward(d_ff, d_model)
-
-    def chunked_ff(self, y1, training=None):
-        result = []
-        T = y1.shape[1]
-        for i in range((T // self.ff_chunk_size) + 1):
-            cs = min(self.ff_chunk_size, T - i * self.ff_chunk_size)
-            if cs == 0:
-                break
-
-            chunk_idx = i * self.ff_chunk_size
-            _y1 = tf.slice(y1, [0, chunk_idx, 0], [-1, cs, -1])
-            result.append(self.ff(_y1, training=training))
-        return result
-
-    # reversible
-    def call(self, x1, x2, t=None, seed=None, training=None):
-        y1 = x1 + self.attn(x2, t, seed=seed, training=training)
-        if self.ff_chunk_size is None:
-            ff_y1 = self.ff(y1, training=training)
-        else:
-            chunked_ff_y1 = self.chunked_ff(y1, training=training)
-            ff_y1 = tf.concat(chunked_ff_y1, axis=1)
-
-        y2 = x2 + ff_y1
-        self.seed = seed
-        return y1, y2
-
-    def compute_gradients(self, y1, y2, dy1, dy2):
-        with tf.GradientTape(persistent=True) as tape:
-            tape.watch(y1)
-            tape.watch(y2)
-
-            if self.ff_chunk_size is None:
-                gy1 = self.ff(y1, training=True)
-                x2 = y2 - gy1
-            else:
-                chunked_x2, chunked_gy1, chunked_y1, chunked_dy2 = [], [], [], []
-                T = y1.shape[1]
-                for i in range((T // self.ff_chunk_size) + 1):
-                    cs = min(self.ff_chunk_size, T - i * self.ff_chunk_size)
-                    if cs == 0:
-                        break
-
-                    chunk_idx = i * self.ff_chunk_size
-                    _y1 = tf.slice(y1, [0, chunk_idx, 0], [-1, cs, -1])
-                    _y2 = tf.slice(y2, [0, chunk_idx, 0], [-1, cs, -1])
-                    _dy2 = tf.slice(dy2, [0, chunk_idx, 0], [-1, cs, -1])
-
-                    _gy1 = self.ff(_y1, training=True)
-                    _x2 = _y2 - _gy1
-
-                    chunked_y1.append(_y1)
-                    chunked_gy1.append(_gy1)
-                    chunked_x2.append(_x2)
-                    chunked_dy2.append(_dy2)
-
-                x2 = tf.concat(chunked_x2, axis=1)
-            fx2 = self.attn(x2, self.max_len, seed=self.seed, training=True)
-            x1 = y1 - fx2
-
-        if self.ff_chunk_size is None:
-            grads_combined = tape.gradient(gy1, [y1] + self.ff.trainable_variables, dy2)
-            dx1 = dy1 + grads_combined[0]
-            dg = grads_combined[1:]
-        else:
-            chunked_dy1, chunked_dg = [], []
-            T = y1.shape[1]
-            for i in range(len(chunked_x2)):
-                _gy1 = chunked_gy1[i]
-                _y1 = chunked_y1[i]
-                _dy2 = chunked_dy2[i]
-
-                grad_dy1 = tape.gradient(_gy1, [_y1] + self.ff.trainable_variables, _dy2)
-                chunked_dy1.append(grad_dy1[0])
-                chunked_dg.append(grad_dy1[1:])
-
-            dx1 = dy1 + tf.concat(chunked_dy1, axis=1)
-            dg = []
-
-            for j in range(len(chunked_dg[0])):
-                item = 0
-                for i in range(len(chunked_dg)):
-                    item += chunked_dg[i][j]
-                dg.append(item)
-
-        grads_combined = tape.gradient(fx2, [x2] + self.attn.trainable_variables, dx1)
-        dx2 = dy2 + grads_combined[0]
-        df = grads_combined[1:]
-
-        _grads = df + dg
-        _vars = self.attn.trainable_variables + self.ff.trainable_variables
-        del tape
-
-        return x1, x2, dx1, dx2, _grads, _vars
