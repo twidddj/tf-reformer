@@ -3,12 +3,35 @@ import numpy as np
 import tensorflow as tf
 from time import time
 import argparse
-from models import Reformer
-from modules import Config
+from models import Reformer, ReformerBlock
+from modules import PositionalEncoder, Config
 
 parent_dir = os.path.join(os.path.dirname(__file__), 'log_dir')
 log_dir_tmpl = 'lsh_seq{}_nr{}_bs{}'
 log_dir_full_attn_tmpl = 'lsh_seq{}_full'
+
+
+class DuplTaskReformer(Reformer):
+    def __init__(self, d_model, d_ff, vocab_size, max_len, num_blocks, attn_config,
+                 ff_chunk_size=None, dropout_rate=0.0):
+        super(Reformer, self).__init__()
+
+        self.d_model = d_model
+        self.d_ff = d_ff
+        self.vocab_size = vocab_size
+        self.max_len = max_len
+        self.dropout_rate = dropout_rate
+        self.num_blocks = num_blocks
+        self.attn_config = attn_config
+
+        self.embeddings = tf.keras.layers.Embedding(vocab_size, d_model)
+        self.positional_encoder = PositionalEncoder(max_len, masking=True, mask_val=0)
+
+        self.blocks = []
+        for i in range(num_blocks):
+            reformer = ReformerBlock(d_model, d_ff, max_len, attn_config, ff_chunk_size, dropout_rate=dropout_rate)
+            self.blocks.append(reformer)
+
 
 
 def get_sample(vocab_size, seg_len):
@@ -22,9 +45,10 @@ def loss_object(logits, labels):
     _, seq_len, _ = logits.shape
     seg_len = seq_len // 2 - 1
     logits = tf.slice(logits, [0, seq_len // 2, 0], [-1, seg_len, -1])
-    losses = tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
+    probs = tf.nn.softmax(logits, -1)
+    losses = tf.keras.losses.sparse_categorical_crossentropy(labels, probs)
     loss = tf.reduce_mean(losses)
-    return loss, logits
+    return loss, probs
 
 
 @tf.function
@@ -97,7 +121,7 @@ class Trainer:
             xs = iterator()
             y_true = xs[:, xs.shape[1] // 2 + 1:]
 
-            loss, y_pred = self.model.train_step(xs, y_true, loss_object, self.optimizer, manual_grad=manual_grad)
+            loss, y_pred = self.model.train_step(xs, y_true, self.loss_object, self.optimizer, manual_grad=manual_grad)
 
             self.checkpoint.step.assign_add(1)
 
@@ -137,6 +161,7 @@ class Trainer:
                 self.train_loss.reset_states()
                 self.train_accuracy.reset_states()
 
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('-b', '--batch_size', default=8, type=int)
@@ -146,9 +171,9 @@ if __name__ == '__main__':
     ap.add_argument('-nb', '--num_blocks', default=1, type=int)
     ap.add_argument('-nh', '--num_heads', default=4, type=int)
     ap.add_argument('-nr', '--num_hashes', default=1, type=int)
-    ap.add_argument('-bs', '--bucket_size', default=4, type=int)
+    ap.add_argument('-bs', '--bucket_size', default=8, type=int)
     ap.add_argument('-cs', '--ff_chunk_size', default=16, type=int)
-    ap.add_argument('-l', '--seq_len', default=32, type=int)
+    ap.add_argument('-l', '--seq_len', default=64, type=int)
     ap.add_argument('-vs', '--vocab_size', default=64, type=int)
     ap.add_argument('-lr', '--learning_rate', default=1e-3, type=float)
     ap.add_argument('-uf', '--use_full', default=False, type=bool)
@@ -174,6 +199,7 @@ if __name__ == '__main__':
         'num_hashes': args.num_hashes,
         'bucket_size': args.bucket_size,
         'causality': True,
+        'causal_start': None,
         'use_full': args.use_full
     })
 
@@ -196,11 +222,11 @@ if __name__ == '__main__':
     with open(os.path.join(log_dir, 'config.json'), 'w') as fout:
         json.dump(argparse_dict, fout)
 
-    model = Reformer(d_model, d_ff, vocab_size, seq_len, num_blocks, attn_config, ff_chunk_size)
+    model = DuplTaskReformer(d_model, d_ff, vocab_size, seq_len, num_blocks, attn_config, ff_chunk_size)
     optimizer = tf.keras.optimizers.Adam(learning_rate)
 
-    trainer = Trainer(model, checkpoint_dir=log_dir,
-                      optimizer=optimizer, batch_size=batch_size, max_iter=150000, loss_func=loss_object)
+    trainer = Trainer(model, checkpoint_dir=log_dir, optimizer=optimizer, batch_size=batch_size,
+                      max_iter=50000, loss_func=loss_object)
 
     def data_load():
         xs = np.stack([get_sample(vocab_size, seg_len) for _ in range(batch_size)])

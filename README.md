@@ -1,7 +1,5 @@
 # Reformer 
-This repository provides an implementation of [Reformer : Efficient Transformer](https://openreview.net/pdf?id=rkgNKkHtvB) in Tensorflow.
-
-You can find the codes written tensorflow 1.x in [here](https://github.com/twidddj/tf-reformer/tree/tf1)
+This repository provides an implementation of [Reformer : Efficient Transformer](https://openreview.net/pdf?id=rkgNKkHtvB) in Tensorflow 2.
 
 ## Features
 - [x] Synthetic task: duplicate a sequence of symbols 
@@ -40,9 +38,18 @@ python -m dupltask.test --use_full 1 -b 100 -n 100 -dir dupltask/log_dir/lsh_seq
 > `accuracy: 0.9986, elapsed: 13.34s`
 
 ##### 2. test seq_len: 1024
+```
+python -m dupltask.test --test_num_hashes 2 -b 2 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64_manual
+```
+> `accuracy: 0.8705, elapsed: 627.34s (on cpu)`
+```
+python -m dupltask.test --test_num_hashes 4 -b 2 -n 10 -dir dupltask/log_dir/lsh_seq1024_nr2_bs64_manual
+```
+> `accuracy: 0.9818, elapsed: 627.34s (on cpu)`
 
 ## Requirements
 * Code is tested on TensorFlow version 2.3.0 for Python 3.7.
+* You can find Reformer written in Tensorflow 1 at [this branch](https://github.com/twidddj/tf-reformer/tree/tf1).
 
 ## References
 - [https://github.com/lucidrains/reformer-pytorch](https://github.com/lucidrains/reformer-pytorch)

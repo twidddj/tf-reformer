@@ -2,16 +2,15 @@ import os
 import numpy as np
 from time import time
 import argparse
-from dupltask.train import Trainer, get_sample, generate
-from models import Reformer
+from dupltask.train import DuplTaskReformer, Trainer, get_sample, generate
 from modules import Config
 
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
-    ap.add_argument('-b', '--batch_size', default=100, type=int)
-    ap.add_argument('-n', '--num_batch', default=100, type=int)
-    ap.add_argument('-dir', '--model_dir', default='log_dir/lsh_seq32_nr1_bs4_manual', type=str)
+    ap.add_argument('-b', '--batch_size', default=2, type=int)
+    ap.add_argument('-n', '--num_batch', default=10, type=int)
+    ap.add_argument('-dir', '--model_dir', default='log_dir/lsh_seq1024_nr2_bs64_manual', type=str)
     ap.add_argument('-tnr', '--test_num_hashes', default=4, type=int)
     ap.add_argument('-tbs', '--test_bucket_size', default=None, type=int)
     ap.add_argument('-uf', '--use_full', default=False, type=bool)
@@ -45,10 +44,11 @@ if __name__ == '__main__':
         'num_hashes': test_nr,
         'bucket_size': test_bs,
         'causality': True,
+        'causal_start': None,
         'use_full': args.use_full
     })
 
-    model = Reformer(d_model, d_ff, vocab_size, seq_len, num_blocks, attn_config, ff_chunk_size)
+    model = DuplTaskReformer(d_model, d_ff, vocab_size, seq_len, num_blocks, attn_config, ff_chunk_size)
 
     log_dir = args.model_dir
 
